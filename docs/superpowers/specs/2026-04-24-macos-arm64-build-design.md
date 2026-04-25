@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add an experimental native Apple Silicon `.app` build path for Electrum on macOS while preserving the current reproducible `x86_64` release build as the default.
+Add an experimental native Apple Silicon `.app` build path for Electrum on macOS while preserving the current reproducible `x86_64` release build as the default. The primary target for this experimental path is a direct build on an Apple Silicon host, such as an M4 Mac, using ARM Python, an ARM toolchain, and ARM-compatible bundled libraries.
 
 This design addresses the local-build side of GitHub issue #7557, "Native Apple Silicon Support (m1, arm)." It does not claim to solve upstream release reproducibility, universal2 packaging, signing, or notarization for ARM builds.
 
@@ -16,6 +16,8 @@ The current macOS release path is intentionally `x86_64`:
 
 Issue #7557 shows the primary upstream constraint: reproducibility. Maintainers disabled universal/native behavior because some compiled `.so` outputs, especially around `hidapi`, were not reproducible when built as universal binaries. The experimental ARM build must not weaken the existing `x86_64` release path.
 
+The first implementation should optimize for a native Apple Silicon build on the current developer machine. Cross-compiling ARM artifacts from an Intel macOS VM is a later release-engineering problem and is not part of this phase.
+
 ## Architecture
 
 Introduce a single build selector:
@@ -24,10 +26,12 @@ Introduce a single build selector:
 ELECTRUM_MACOS_ARCH=x86_64|arm64
 ```
 
-The default remains `x86_64`. When set to `arm64`, the build script and PyInstaller spec must consistently use ARM settings:
+The default remains `x86_64`. When set to `arm64`, the build script and PyInstaller spec must consistently use ARM settings and must verify that the host is running an ARM-capable macOS toolchain:
 
 - `ARCHFLAGS="-arch arm64"` for Python native extension and native library builds.
 - `target_arch='arm64'` for the PyInstaller executable.
+- ARM Python runtime, preferably the pinned Python package if it provides an ARM or universal macOS install on the host.
+- Apple clang and SDK capable of emitting `arm64` Mach-O files.
 - Architecture-specific cache and DLL output directories, for example `.cache/dlls-arm64`, to prevent reuse of stale `x86_64` libraries.
 - Architecture-specific unsigned DMG output, for example `electrum-$VERSION-arm64-unsigned.dmg`.
 
@@ -53,7 +57,7 @@ The selected architecture must apply to all app-bundled native libraries:
 - Python native extensions such as `hidapi`
 - PyQt/Qt Mach-O files bundled by PyInstaller
 
-For ARM builds, the app must use an ARM Python runtime, ARM PyInstaller bootloader, and ARM-compatible bundled libraries. A successful build is not valid if the top-level app executable is ARM but required bundled libraries are `x86_64` only.
+For ARM builds, the app must use an ARM Python runtime, ARM PyInstaller bootloader, ARM compiler output, and ARM-compatible bundled libraries. A successful build is not valid if the top-level app executable is ARM but required bundled libraries are `x86_64` only. The implementation should prefer native ARM builds over Rosetta or cross-compile behavior when `ELECTRUM_MACOS_ARCH=arm64`.
 
 ## Validation
 
@@ -68,6 +72,7 @@ For `ELECTRUM_MACOS_ARCH=x86_64`, validation must preserve current behavior and 
 The build should fail early for:
 
 - Unsupported `ELECTRUM_MACOS_ARCH` values.
+- `ELECTRUM_MACOS_ARCH=arm64` on a host that cannot provide an ARM Python runtime or ARM toolchain.
 - Reused native dependency caches from a different architecture.
 - Missing PyInstaller bootloader for the requested architecture.
 - Bundled Mach-O artifacts that do not contain the requested architecture.
@@ -80,7 +85,8 @@ Update `contrib/osx/README.md` to document:
 
 - The default release path remains `x86_64`.
 - `ELECTRUM_MACOS_ARCH=arm64 ./contrib/osx/make_osx.sh` is experimental.
-- ARM builds are intended for local Apple Silicon testing.
+- ARM builds are intended for direct local Apple Silicon testing, including M-series Macs.
+- ARM builds must use ARM Python/toolchain/libraries and should fail if they silently fall back to Rosetta-only `x86_64` artifacts.
 - Issue #7557 remains open until reproducibility, signing, notarization, and release-process questions are resolved.
 
 ## Testing Plan
@@ -89,6 +95,7 @@ Use fast checks where possible:
 
 - Validate accepted and rejected `ELECTRUM_MACOS_ARCH` values.
 - Confirm `pyinstaller.spec` receives and validates the selected architecture.
+- Confirm the ARM path detects an Apple Silicon host, ARM Python runtime, and ARM clang output before packaging.
 - Run a local ARM build attempt on Apple Silicon if permissions and downloads are available.
 - After a successful ARM build, run architecture validation over the app bundle.
 - Run the existing Python test suite to ensure the source tree remains healthy.
