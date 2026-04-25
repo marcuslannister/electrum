@@ -20,6 +20,10 @@ VERSION = os.environ.get("ELECTRUM_VERSION")
 if not VERSION:
     raise Exception('no version')
 
+TARGET_ARCH = os.environ.get("ELECTRUM_MACOS_ARCH", "x86_64")
+if TARGET_ARCH not in {"x86_64", "arm64"}:
+    raise Exception(f"unsupported ELECTRUM_MACOS_ARCH: {TARGET_ARCH}")
+
 block_cipher = None
 
 # see https://github.com/pyinstaller/pyinstaller/issues/2005
@@ -117,7 +121,7 @@ exe = EXE(
     upx=True,
     icon=ICONS_FILE,
     console=False,
-    target_arch='x86_64',  # TODO investigate building 'universal2'
+    target_arch=TARGET_ARCH,
 )
 
 app = BUNDLE(

@@ -5,6 +5,7 @@ set -e
 # Parameterize
 PYTHON_VERSION=3.12.10
 PY_VER_MAJOR="3.12"  # as it appears in fs paths
+PYTHON_BIN="/Library/Frameworks/Python.framework/Versions/$PY_VER_MAJOR/bin/python3"
 PACKAGE=Electrum
 GIT_REPO=https://github.com/spesmilo/electrum
 
@@ -13,14 +14,17 @@ export PYTHONDONTWRITEBYTECODE=1  # don't create __pycache__/ folders with .pyc 
 
 
 . "$(dirname "$0")/../build_tools_util.sh"
+. "$(dirname "$0")/macos_arch.sh"
 
 
 CONTRIB_OSX="$(dirname "$(realpath "$0")")"
 CONTRIB="$CONTRIB_OSX/.."
 PROJECT_ROOT="$CONTRIB/.."
 CACHEDIR="$CONTRIB_OSX/.cache"
-export DLL_TARGET_DIR="$CACHEDIR/dlls"
-PIP_CACHE_DIR="$CACHEDIR/pip_cache"
+export ELECTRUM_MACOS_ARCH="$(electrum_macos_get_arch)"
+export DLL_TARGET_DIR="$(electrum_macos_cache_subdir "$CACHEDIR" dlls "$ELECTRUM_MACOS_ARCH")"
+PIP_CACHE_DIR="$(electrum_macos_cache_subdir "$CACHEDIR" pip_cache "$ELECTRUM_MACOS_ARCH")"
+PYINSTALLER_BUILD_DIR="$(electrum_macos_cache_subdir "$CACHEDIR" pyinstaller "$ELECTRUM_MACOS_ARCH")"
 
 mkdir -p "$CACHEDIR" "$DLL_TARGET_DIR" "$PIP_CACHE_DIR"
 
@@ -32,6 +36,12 @@ git -C "$PROJECT_ROOT" rev-parse 2>/dev/null || fail "Building outside a git clo
 which brew > /dev/null 2>&1 || fail "Please install brew from https://brew.sh/ to continue"
 which xcodebuild > /dev/null 2>&1 || fail "Please install xcode command line tools to continue"
 
+electrum_macos_check_host_arch "$ELECTRUM_MACOS_ARCH" \
+    || fail "host cannot build native $ELECTRUM_MACOS_ARCH"
+electrum_macos_check_clang_arch "$ELECTRUM_MACOS_ARCH" \
+    || fail "clang cannot build $ELECTRUM_MACOS_ARCH Mach-O files"
+info "Building macOS target architecture: $ELECTRUM_MACOS_ARCH"
+
 
 info "Installing Python $PYTHON_VERSION"
 PKG_FILE="python-${PYTHON_VERSION}-macos11.pkg"
@@ -42,12 +52,15 @@ echo "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4  $CACHEDI
     || fail "python pkg checksum mismatched"
 sudo installer -pkg "$CACHEDIR/$PKG_FILE" -target / \
     || fail "failed to install python"
+[[ -x "$PYTHON_BIN" ]] || fail "could not find pinned Python at $PYTHON_BIN"
 
-# sanity check "python3" has the version we just installed.
-FOUND_PY_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+# sanity check the pinned python has the version we just installed.
+FOUND_PY_VERSION=$("$PYTHON_BIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
 if [[ "$FOUND_PY_VERSION" != "$PYTHON_VERSION" ]]; then
     fail "python version mismatch: $FOUND_PY_VERSION != $PYTHON_VERSION"
 fi
+electrum_macos_check_python_runtime_arch "$ELECTRUM_MACOS_ARCH" "$PYTHON_BIN" \
+    || fail "$PYTHON_BIN runtime architecture is not $ELECTRUM_MACOS_ARCH"
 
 break_legacy_easy_install
 
@@ -55,8 +68,12 @@ break_legacy_easy_install
 # This helps to avoid older versions of pip-installed dependencies interfering with the build.
 VENV_DIR="$CONTRIB_OSX/build-venv"
 rm -rf "$VENV_DIR"
-python3 -m venv "$VENV_DIR"
+"$PYTHON_BIN" -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
+PIP_CERT="$(python3 -c 'import pip._vendor.certifi; print(pip._vendor.certifi.where())')" \
+    || fail "Could not locate pip vendored certifi certificate bundle"
+[[ -f "$PIP_CERT" ]] || fail "pip certificate bundle not found at $PIP_CERT"
+export PIP_CERT
 
 # don't add debug info to compiled C files (e.g. when pip calls setuptools/wheel calls gcc)
 # see https://github.com/pypa/pip/issues/6505#issuecomment-526613584
@@ -66,7 +83,7 @@ export CFLAGS="-g0"
 
 # Do not build universal binaries. The default on macos 11+ and xcode 12+ is "-arch arm64 -arch x86_64"
 # but with that e.g. "hid.cpython-310-darwin.so" is not reproducible as built by clang.
-export ARCHFLAGS="-arch x86_64"
+export ARCHFLAGS="$(electrum_macos_archflags "$ELECTRUM_MACOS_ARCH")"
 
 info "Installing build dependencies"
 # note: re pip installing from PyPI,
@@ -92,20 +109,20 @@ PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
 PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
 # ^ tag "v6.13.0"
 (
-    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Darwin-64bit/runw" ]; then
+    if PYINSTALLER_BOOTLOADER="$(electrum_macos_find_bootloader "$PYINSTALLER_BUILD_DIR" "$ELECTRUM_MACOS_ARCH")"; then
         info "pyinstaller already built, skipping"
+        info "Using PyInstaller bootloader $PYINSTALLER_BOOTLOADER"
         exit 0
     fi
     cd "$PROJECT_ROOT"
     ELECTRUM_COMMIT_HASH=$(git rev-parse HEAD)
-    cd "$CACHEDIR"
-    rm -rf pyinstaller
-    mkdir pyinstaller
-    cd pyinstaller
+    rm -rf "$PYINSTALLER_BUILD_DIR"
+    mkdir -p "$PYINSTALLER_BUILD_DIR"
+    cd "$PYINSTALLER_BUILD_DIR"
     # Shallow clone
     git init
-    git remote add origin $PYINSTALLER_REPO
-    git fetch --depth 1 origin $PYINSTALLER_COMMIT
+    git remote add origin "$PYINSTALLER_REPO"
+    git fetch --depth 1 origin "$PYINSTALLER_COMMIT"
     git checkout -b pinned "${PYINSTALLER_COMMIT}^{commit}"
     rm -fv PyInstaller/bootloader/Darwin-*/run* || true
     # add reproducible randomness. this ensures we build a different bootloader for each commit.
@@ -116,11 +133,13 @@ PYINSTALLER_COMMIT="306d4d92580fea7be7ff2c89ba112cdc6f73fac1"
     python3 ./waf all CFLAGS="-static"
     popd
     # sanity check bootloader is there:
-    [[ -e "PyInstaller/bootloader/Darwin-64bit/runw" ]] || fail "Could not find runw in target dir!"
+    PYINSTALLER_BOOTLOADER="$(electrum_macos_find_bootloader "$PYINSTALLER_BUILD_DIR" "$ELECTRUM_MACOS_ARCH")" \
+        || fail "Could not find PyInstaller runw bootloader for $ELECTRUM_MACOS_ARCH"
+    info "Using PyInstaller bootloader $PYINSTALLER_BOOTLOADER"
 )
 info "Installing PyInstaller."
 python3 -m pip install --no-build-isolation --no-dependencies \
-    --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location "$CACHEDIR/pyinstaller"
+    --cache-dir "$PIP_CACHE_DIR" --no-warn-script-location "$PYINSTALLER_BUILD_DIR"
 
 info "Using these versions for building $PACKAGE:"
 sw_vers
@@ -215,13 +234,17 @@ find . -exec touch -t '200101220000' {} + || true
 VERSION=$(git describe --tags --always)
 
 info "Building binary"
-ELECTRUM_VERSION=$VERSION pyinstaller --noconfirm --clean contrib/osx/pyinstaller.spec || fail "Could not build binary"
+ELECTRUM_VERSION=$VERSION ELECTRUM_MACOS_ARCH=$ELECTRUM_MACOS_ARCH pyinstaller --noconfirm --clean contrib/osx/pyinstaller.spec || fail "Could not build binary"
 
 info "Finished building unsigned dist/${PACKAGE}.app. This hash should be reproducible:"
 find "dist/${PACKAGE}.app" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256
 
+electrum_macos_validate_app_bundle_arch "dist/${PACKAGE}.app" "$ELECTRUM_MACOS_ARCH" \
+    || fail "Built app contains Mach-O files without $ELECTRUM_MACOS_ARCH"
+
 info "Creating unsigned .DMG"
-hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-$VERSION-unsigned.dmg || fail "Could not create .DMG"
+UNSIGNED_DMG="$(electrum_macos_unsigned_dmg_path dist "$VERSION" "$ELECTRUM_MACOS_ARCH")"
+hdiutil create -fs HFS+ -volname "$PACKAGE" -srcfolder "dist/$PACKAGE.app" "$UNSIGNED_DMG" || fail "Could not create .DMG"
 
 info "App was built successfully but was not code signed. Users may get security warnings from macOS."
 info "Now you also need to run sign_osx.sh to codesign/notarize the binary."

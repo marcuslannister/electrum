@@ -60,6 +60,8 @@ info "Building $pkgname..."
                 --with-x=no \
                 --enable-video=no \
                 --with-jpeg=no"
+            LIBS="${LIBS:-} -liconv"
+            export LIBS
         else
             # linux target
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \

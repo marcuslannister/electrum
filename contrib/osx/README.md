@@ -1,8 +1,8 @@
 Building macOS binaries
 =======================
 
-✓ _This binary should be reproducible, meaning you should be able to generate
-   binaries that match the official releases._
+✓ _The default x86_64 binary should be reproducible, meaning you should be able
+   to generate binaries that match the official releases._
 
 - _Minimum supported target system (i.e. what end-users need): macOS 11_
 
@@ -13,8 +13,10 @@ This guide explains how to build Electrum binaries for macOS systems.
 
 This needs to be done on a system running macOS or OS X.
 
-The script is only tested on Intel-based (x86_64) Macs, and the binary built
-targets `x86_64` currently.
+The default build target is `x86_64`, matching the current release binary path.
+There is also an experimental `arm64` path for direct local testing on Apple
+Silicon Macs. The `arm64` path is not currently an official reproducible release
+path and does not change codesigning or notarization behavior.
 
 Notes about compatibility with different macOS versions:
 - In general the binary is not guaranteed to run on an older version of macOS
@@ -93,6 +95,18 @@ Let brew install the Xcode CLI tools.
     ./contrib/osx/make_osx.sh
 
 This creates both a folder named Electrum.app and the .dmg file (both unsigned).
+By default, the build uses `ELECTRUM_MACOS_ARCH=x86_64`.
+
+For experimental native Apple Silicon testing on an M-series Mac:
+
+    ELECTRUM_MACOS_ARCH=arm64 ./contrib/osx/make_osx.sh
+
+The `arm64` build uses an ARM Python runtime, an ARM-capable clang/SDK, and
+ARM-compatible bundled native libraries. The build validates Mach-O files in the
+final app bundle and fails if required files are `x86_64`-only.
+
+For `arm64`, the unsigned DMG includes the architecture in the filename, for
+example `dist/electrum-4.5.8-arm64-unsigned.dmg`.
 
 ##### 2.1. For release binaries, here be dragons
 
